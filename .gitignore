@@ -62,3 +62,12 @@ secret.txt
 download_assets.sh
 keep_going.sh
 upload.ipynb
+
+eval_results/*
+mikasa_models/*
+test_rollouts/*
+eval_*/*
+new*/*
+
+*.tar*
+*.zip
