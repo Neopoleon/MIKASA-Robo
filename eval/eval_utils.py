@@ -25,7 +25,6 @@ import hydra
 
 import mani_skill.envs  # noqa: F401 — registers ManiSkill envs
 from mani_skill.utils.wrappers.flatten import FlattenActionSpaceWrapper
-from mani_skill.utils.wrappers.record import RecordEpisode
 from mani_skill.vector.wrappers.gymnasium import ManiSkillVectorEnv
 
 from mikasa_robo_suite.memory_envs import *  # noqa: F403 — registers MIKASA envs
@@ -67,27 +66,47 @@ def _base_wrappers() -> list[WrapperSpec]:
 
 
 TASK_REGISTRY: dict[str, TaskConfig] = {
-    "ShellGameTouch-v0": TaskConfig(
-        episode_steps=90,
-        extra_wrappers=[(ShellGameRenderCupInfoWrapper, {})],
-    ),
-    "InterceptMedium-v0": TaskConfig(episode_steps=90),
-    "RememberColor3-v0": TaskConfig(
-        episode_steps=60,
-        extra_wrappers=[(RememberColorInfoWrapper, {})],
-    ),
-    "RememberColor6-v0": TaskConfig(
-        episode_steps=60,
-        extra_wrappers=[(RememberColorInfoWrapper, {})],
-    ),
-    "RememberColor9-v0": TaskConfig(
-        episode_steps=60,
-        extra_wrappers=[(RememberColorInfoWrapper, {})],
-    ),
-    "RememberShape3-v0": TaskConfig(
-        episode_steps=60,
-        extra_wrappers=[(RememberShapeInfoWrapper, {})],
-    ),
+    # shell game (90 steps)
+    "ShellGameTouch-v0": TaskConfig(episode_steps=90, extra_wrappers=[(ShellGameRenderCupInfoWrapper, {})]),
+    "ShellGamePush-v0":  TaskConfig(episode_steps=90, extra_wrappers=[(ShellGameRenderCupInfoWrapper, {})]),
+    "ShellGamePick-v0":  TaskConfig(episode_steps=90, extra_wrappers=[(ShellGameRenderCupInfoWrapper, {})]),
+    # intercept (90 steps)
+    "InterceptSlow-v0":     TaskConfig(episode_steps=90),
+    "InterceptMedium-v0":   TaskConfig(episode_steps=90),
+    "InterceptFast-v0":     TaskConfig(episode_steps=90),
+    "InterceptGrabSlow-v0":   TaskConfig(episode_steps=90),
+    "InterceptGrabMedium-v0": TaskConfig(episode_steps=90),
+    "InterceptGrabFast-v0":   TaskConfig(episode_steps=90),
+    # rotate (90 steps)
+    "RotateStrictPos-v0":      TaskConfig(episode_steps=90, extra_wrappers=[(RotateRenderAngleInfoWrapper, {})]),
+    "RotateStrictPosNeg-v0":   TaskConfig(episode_steps=90, extra_wrappers=[(RotateRenderAngleInfoWrapper, {})]),
+    "RotateLenientPos-v0":     TaskConfig(episode_steps=90, extra_wrappers=[(RotateRenderAngleInfoWrapper, {})]),
+    "RotateLenientPosNeg-v0":  TaskConfig(episode_steps=90, extra_wrappers=[(RotateRenderAngleInfoWrapper, {})]),
+    # take it back (180 steps)
+    "TakeItBack-v0": TaskConfig(episode_steps=180),
+    # remember color (60 steps)
+    "RememberColor3-v0": TaskConfig(episode_steps=60, extra_wrappers=[(RememberColorInfoWrapper, {})]),
+    "RememberColor5-v0": TaskConfig(episode_steps=60, extra_wrappers=[(RememberColorInfoWrapper, {})]),
+    "RememberColor6-v0": TaskConfig(episode_steps=60, extra_wrappers=[(RememberColorInfoWrapper, {})]),
+    "RememberColor9-v0": TaskConfig(episode_steps=60, extra_wrappers=[(RememberColorInfoWrapper, {})]),
+    # remember shape (60 steps)
+    "RememberShape3-v0": TaskConfig(episode_steps=60, extra_wrappers=[(RememberShapeInfoWrapper, {})]),
+    "RememberShape5-v0": TaskConfig(episode_steps=60, extra_wrappers=[(RememberShapeInfoWrapper, {})]),
+    "RememberShape9-v0": TaskConfig(episode_steps=60, extra_wrappers=[(RememberShapeInfoWrapper, {})]),
+    # remember shape + color (60 steps)
+    "RememberShapeAndColor3x2-v0": TaskConfig(episode_steps=60, extra_wrappers=[(RememberShapeAndColorInfoWrapper, {})]),
+    "RememberShapeAndColor3x3-v0": TaskConfig(episode_steps=60, extra_wrappers=[(RememberShapeAndColorInfoWrapper, {})]),
+    "RememberShapeAndColor5x3-v0": TaskConfig(episode_steps=60, extra_wrappers=[(RememberShapeAndColorInfoWrapper, {})]),
+    # color sequence tasks (120 steps)
+    "BunchOfColors3-v0": TaskConfig(episode_steps=120),
+    "BunchOfColors5-v0": TaskConfig(episode_steps=120),
+    "BunchOfColors7-v0": TaskConfig(episode_steps=120),
+    "SeqOfColors3-v0":   TaskConfig(episode_steps=120),
+    "SeqOfColors5-v0":   TaskConfig(episode_steps=120),
+    "SeqOfColors7-v0":   TaskConfig(episode_steps=120),
+    "ChainOfColors3-v0": TaskConfig(episode_steps=120),
+    "ChainOfColors5-v0": TaskConfig(episode_steps=120),
+    "ChainOfColors7-v0": TaskConfig(episode_steps=120),
 }
 
 
@@ -157,14 +176,6 @@ def make_eval_env(
         env = FlattenActionSpaceWrapper(env)
 
     inner_env = env  # keep ref for render() with overlays
-
-    if capture_video:
-        video_dir = os.path.join(output_dir, env_id, "videos")
-        os.makedirs(video_dir, exist_ok=True)
-        env = RecordEpisode(
-            env, output_dir=video_dir, save_trajectory=False,
-            max_steps_per_video=num_eval_steps, video_fps=30,
-        )
 
     vec_env = ManiSkillVectorEnv(env, num_envs, ignore_terminations=True, record_metrics=True)
     return vec_env, inner_env
@@ -278,21 +289,27 @@ ACTION_HORIZON = 2  # actions per prediction, matches training chunk size
 @torch.no_grad()
 def predict_action(
     obs: dict[str, torch.Tensor],
-    policy: BasePolicy,
-    normalizer: FixedNormalizer,
+    policy,
+    normalizer,
     num_envs: int,
     device: torch.device,
     no_proprio: bool = False,
+    action_horizon: int = ACTION_HORIZON,
 ) -> torch.Tensor:
-    """obs → normalize → diffusion denoise → unnormalize → action chunk (B, ACTION_HORIZON, 8).
+    """obs → normalize → diffusion denoise → unnormalize → action chunk (B, action_horizon, 8).
     auto-detects output key: action0_8d (action-space) or robot0_8d (state-space / direct-qpos).
     """
+    # lazy import: remote client uses its own action_horizon and no_proprio from server config
+    from remote_policy_client import RemotePolicyClient
+    if isinstance(policy, RemotePolicyClient):
+        return policy.predict_action(obs, num_envs, device, no_proprio)
+
     batch = obs_to_policy_input(obs, num_envs, device, no_proprio=no_proprio)
     batch = normalizer.normalize(batch)
     action_dict = policy.predict_action(batch)
     action_dict = normalizer.unnormalize(action_dict)
     output_key = "action0_8d" if "action0_8d" in action_dict else "robot0_8d"
-    return action_dict[output_key][:, :ACTION_HORIZON, :]
+    return action_dict[output_key][:, :action_horizon, :]
 
 
 # frame annotation helpers

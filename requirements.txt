@@ -12,3 +12,4 @@ ipywidgets
 opencv-python==4.10.0.84
 gputil
 psutil
+loguru

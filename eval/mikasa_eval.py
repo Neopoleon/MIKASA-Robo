@@ -41,14 +41,21 @@ from eval_utils import (
 )
 
 
+def _maybe_report_progress(policy, step: int, total: int) -> None:
+    """Report progress to tmp file if using remote policy (for orchestrator to read)."""
+    if hasattr(policy, "report_progress"):
+        policy.report_progress(step, total)
+
+
 # eval loop
 
 def run_eval(env, inner_env, policy, normalizer, num_envs, num_eval_steps, device, seed,
-             output_dir, env_id, no_proprio=False):
+             output_dir, env_id, no_proprio=False, action_horizon=ACTION_HORIZON, task_dir=None):
     """predict → execute ACTION_HORIZON steps → repeat. save episodes on completion.
-    output: <output_dir>/<env_id>/episode_NNNN_{success|failure}/ + summary.json
+    output: <task_dir>/episode_NNNN_{success|failure}/ + summary.json
     """
-    task_dir = os.path.join(output_dir, env_id)
+    if task_dir is None:
+        task_dir = os.path.join(output_dir, env_id)
     os.makedirs(task_dir, exist_ok=True)
 
     obs, _ = env.reset(seed=seed)
@@ -60,9 +67,9 @@ def run_eval(env, inner_env, policy, normalizer, num_envs, num_eval_steps, devic
     pbar = tqdm(total=num_eval_steps, desc="eval")
 
     while step < num_eval_steps:
-        action_chunk = predict_action(obs, policy, normalizer, num_envs, device, no_proprio=no_proprio)
+        action_chunk = predict_action(obs, policy, normalizer, num_envs, device, no_proprio=no_proprio, action_horizon=action_horizon)
 
-        for t in range(ACTION_HORIZON):
+        for t in range(action_horizon):
             if step >= num_eval_steps:
                 break
 
@@ -75,6 +82,7 @@ def run_eval(env, inner_env, policy, normalizer, num_envs, num_eval_steps, devic
             buffers.append_reward(reward)
             step += 1
             pbar.update(1)
+            _maybe_report_progress(policy, step, num_eval_steps)
 
             if "final_info" in infos:
                 num_episodes = handle_episode_completions(
@@ -106,11 +114,12 @@ def run_eval(env, inner_env, policy, normalizer, num_envs, num_eval_steps, devic
 # bare minimum test: if the policy can't predict the next state, action-based control won't work either.
 
 def run_direct_qpos(env, inner_env, policy, normalizer, num_envs, num_eval_steps, device, seed,
-                    output_dir, env_id, no_proprio=False):
+                    output_dir, env_id, no_proprio=False, action_horizon=ACTION_HORIZON, task_dir=None):
     """policy predicts absolute qpos → teleport robot → get obs → repeat.
     same as run_eval but replaces env.step(action) with teleport_to_qpos(predicted_state).
     """
-    task_dir = os.path.join(output_dir, env_id)
+    if task_dir is None:
+        task_dir = os.path.join(output_dir, env_id)
     os.makedirs(task_dir, exist_ok=True)
 
     obs, _ = env.reset(seed=seed)
@@ -122,9 +131,9 @@ def run_direct_qpos(env, inner_env, policy, normalizer, num_envs, num_eval_steps
     pbar = tqdm(total=num_eval_steps, desc="direct-qpos eval")
 
     while step < num_eval_steps:
-        action_chunk = predict_action(obs, policy, normalizer, num_envs, device, no_proprio=no_proprio)
+        action_chunk = predict_action(obs, policy, normalizer, num_envs, device, no_proprio=no_proprio, action_horizon=action_horizon)
 
-        for t in range(ACTION_HORIZON):
+        for t in range(action_horizon):
             if step >= num_eval_steps:
                 break
 
@@ -138,6 +147,7 @@ def run_direct_qpos(env, inner_env, policy, normalizer, num_envs, num_eval_steps
             buffers.append_reward(reward)
             step += 1
             pbar.update(1)
+            _maybe_report_progress(policy, step, num_eval_steps)
 
             if "final_info" in infos:
                 num_episodes = handle_episode_completions(
@@ -166,11 +176,13 @@ def run_direct_qpos(env, inner_env, policy, normalizer, num_envs, num_eval_steps
 # ensures each eval episode uses the exact same scene as training.
 
 def run_with_train_seeds(env, inner_env, policy, normalizer, device, train_seeds, task_cfg,
-                         num_envs, output_dir, env_id, no_proprio=False, direct_qpos=False):
+                         num_envs, output_dir, env_id, no_proprio=False, direct_qpos=False,
+                         action_horizon=ACTION_HORIZON, task_dir=None):
     """run eval/direct-qpos on training seeds in batches of num_envs.
     each episode gets a unique seed from train_seeds. resets all envs per batch.
     """
-    task_dir = os.path.join(output_dir, env_id)
+    if task_dir is None:
+        task_dir = os.path.join(output_dir, env_id)
     os.makedirs(task_dir, exist_ok=True)
     episode_steps = task_cfg.episode_steps
     mode = "direct-qpos" if direct_qpos else "eval"
@@ -195,7 +207,7 @@ def run_with_train_seeds(env, inner_env, policy, normalizer, device, train_seeds
         buffers = EpisodeBuffers(num_envs)
 
         for step in range(episode_steps):
-            action_chunk = predict_action(obs, policy, normalizer, num_envs, device, no_proprio=no_proprio)
+            action_chunk = predict_action(obs, policy, normalizer, num_envs, device, no_proprio=no_proprio, action_horizon=action_horizon)
             action = action_chunk[:, 0, :]
 
             render_frame = inner_env.render()
@@ -207,6 +219,8 @@ def run_with_train_seeds(env, inner_env, policy, normalizer, device, train_seeds
             else:
                 obs, reward, _term, _trunc, infos = env.step(action)
             buffers.append_reward(reward)
+            total_steps = len(train_seeds) * episode_steps
+            _maybe_report_progress(policy, batch_start + step, total_steps)
 
             if "final_info" in infos:
                 num_episodes = handle_episode_completions(
@@ -332,11 +346,19 @@ def run_replay(policy, normalizer, device, replay_data_path,
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate IL policy on MIKASA-Robo")
-    parser.add_argument("--env-id", type=str, required=True, choices=list(TASK_REGISTRY.keys()))
-    parser.add_argument("--checkpoint", type=str, required=True)
+    parser.add_argument("--env-id", type=str, default=None, choices=list(TASK_REGISTRY.keys()),
+                        help="task env id (auto-detected from server config when using --remote-server)")
+    parser.add_argument("--checkpoint", type=str, default=None,
+                        help="path to .ckpt file (not needed when using --remote-server)")
+    parser.add_argument("--remote-server", type=str, default=None,
+                        help="tcp://host:port of RemotePolicyServer. Overrides --checkpoint.")
+    parser.add_argument("--progress-file", type=str, default=None,
+                        help="path to write eval progress JSON (for orchestrator). auto-created if omitted.")
     parser.add_argument("--num-envs", type=int, default=16)
     parser.add_argument("--num-eval-steps", type=int, default=None,
-                        help="total env.step() calls (default: task episode_steps)")
+                        help="total env.step() calls (overrides --num-eval-episodes)")
+    parser.add_argument("--num-eval-episodes", type=int, default=None,
+                        help="target number of episodes (rounds up to fill parallel envs)")
     parser.add_argument("--capture-video", action="store_true")
     parser.add_argument("--output-dir", type=str, default="eval_results")
     parser.add_argument("--seed", type=int, default=0)
@@ -364,8 +386,22 @@ def parse_args():
 def main():
     args = parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    if args.remote_server:
+        from remote_policy_client import RemotePolicyClient
+        policy = RemotePolicyClient(args.remote_server, progress_file=args.progress_file)
+        normalizer = None
+        if args.env_id is None:
+            args.env_id = policy.env_id
+        action_horizon = policy.action_horizon
+        args.no_proprio = policy.no_proprio
+    else:
+        if args.checkpoint is None or args.env_id is None:
+            raise ValueError("--checkpoint and --env-id are required when not using --remote-server")
+        policy, normalizer = load_policy(args.checkpoint, device)
+        action_horizon = ACTION_HORIZON
+
     task_cfg = TASK_REGISTRY[args.env_id]
-    policy, normalizer = load_policy(args.checkpoint, device)
 
     if args.abs_joint_pos and args.direct_qpos:
         raise ValueError("--abs-joint-pos and --direct-qpos are mutually exclusive")
@@ -400,7 +436,14 @@ def main():
         control_mode = "pd_joint_delta_pos"
         mode_label = "eval"
 
-    num_eval_steps = args.num_eval_steps or task_cfg.episode_steps
+    if args.num_eval_steps is not None:
+        num_eval_steps = args.num_eval_steps
+    elif args.num_eval_episodes is not None:
+        import math
+        num_batches = math.ceil(args.num_eval_episodes / args.num_envs)
+        num_eval_steps = num_batches * task_cfg.episode_steps
+    else:
+        num_eval_steps = task_cfg.episode_steps
     env, inner_env = make_eval_env(
         env_id=args.env_id, task_cfg=task_cfg, num_envs=args.num_envs,
         num_eval_steps=num_eval_steps, capture_video=args.capture_video,
@@ -413,12 +456,14 @@ def main():
             env, inner_env, policy, normalizer, device, train_seeds, task_cfg,
             num_envs=args.num_envs, output_dir=args.output_dir, env_id=args.env_id,
             no_proprio=args.no_proprio, direct_qpos=args.direct_qpos,
+            action_horizon=action_horizon,
         )
     elif args.direct_qpos:
         print(f"\n{mode_label}: {args.env_id} | {num_eval_steps} steps | {args.num_envs} envs")
         results = run_direct_qpos(
             env, inner_env, policy, normalizer, args.num_envs, num_eval_steps, device, args.seed,
             output_dir=args.output_dir, env_id=args.env_id, no_proprio=args.no_proprio,
+            action_horizon=action_horizon,
         )
     else:
         # normal eval and abs-joint-pos use the same loop — only control_mode differs
@@ -426,6 +471,7 @@ def main():
         results = run_eval(
             env, inner_env, policy, normalizer, args.num_envs, num_eval_steps, device, args.seed,
             output_dir=args.output_dir, env_id=args.env_id, no_proprio=args.no_proprio,
+            action_horizon=action_horizon,
         )
 
     env.close()
@@ -437,6 +483,11 @@ def main():
     for k, v in results.items():
         print(f"  {k}: {v:.4f}")
     print(f"{'='*50}")
+
+    if args.remote_server:
+        results["num_episodes"] = n
+        policy.report_results(results)
+        policy.cleanup()
 
 
 if __name__ == "__main__":
