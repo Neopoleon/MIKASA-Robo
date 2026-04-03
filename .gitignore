@@ -73,3 +73,5 @@ replay_data/*
 
 *.tar*
 *.zip
+!eval/mikasa_env_server.py
+!eval/remote_policy_client.py
