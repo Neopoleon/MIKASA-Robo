@@ -58,6 +58,7 @@ def run_eval(env, inner_env, policy, normalizer, num_envs, num_eval_steps, devic
         task_dir = os.path.join(output_dir, env_id)
     os.makedirs(task_dir, exist_ok=True)
 
+    policy.reset()
     obs, _ = env.reset(seed=seed)
     buffers = EpisodeBuffers(num_envs)
     metrics = defaultdict(list)
@@ -122,6 +123,7 @@ def run_direct_qpos(env, inner_env, policy, normalizer, num_envs, num_eval_steps
         task_dir = os.path.join(output_dir, env_id)
     os.makedirs(task_dir, exist_ok=True)
 
+    policy.reset()
     obs, _ = env.reset(seed=seed)
     buffers = EpisodeBuffers(num_envs)
     metrics = defaultdict(list)

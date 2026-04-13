@@ -1,10 +1,25 @@
 import json
 import os
+import re
 import tempfile
 
 import robotmq
 import torch
-from eval_utils import obs_to_policy_input
+from eval_utils import TASK_REGISTRY, obs_to_policy_input
+
+
+def _resolve_env_id(name: str) -> str:
+    """Convert hydra task name to MIKASA env id if needed.
+
+    e.g. mikasa_remember_color_3 -> RememberColor3-v0
+    """
+    if name in TASK_REGISTRY:
+        return name
+    converted = re.sub(r"^mikasa_", "", name)
+    converted = re.sub(r"_([a-z])", lambda m: m.group(1).upper(), converted)
+    converted = re.sub(r"_(\d)", r"\1", converted)
+    converted = converted[0].upper() + converted[1:] + "-v0"
+    return converted
 
 
 class RemotePolicyClient:
@@ -24,7 +39,7 @@ class RemotePolicyClient:
             self.progress_file = progress_file
         self.policy_config = self.get_policy_config()
         self.action_horizon = self.policy_config["workspace"]["model"]["action_length"]
-        self.env_id = self.policy_config["workspace"]["train_dataset"]["name"]
+        self.env_id = _resolve_env_id(self.policy_config["workspace"]["train_dataset"]["name"])
         self.no_proprio: bool = int(self.policy_config["workspace"]["model"]["proprio_length"]) == 0
 
     def get_policy_config(self) -> dict:

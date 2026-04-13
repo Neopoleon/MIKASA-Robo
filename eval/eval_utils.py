@@ -198,6 +198,17 @@ def obs_to_policy_input(
     rgb = obs["rgb"]
     joints = obs["joints"]
 
+    # # Downscale 256→128 then upscale 128→256 to match training resolution
+    # if rgb.shape[1] == 256 and rgb.shape[2] == 256:
+    #     import kornia
+    #     print("\033[96mResizing obs rgb from 256x256 → 128x128 → 256x256\033[0m")
+    #     # kornia expects (B, C, H, W) float
+    #     rgb_f = rgb.float().permute(0, 3, 1, 2)  # (B, 6, 256, 256)
+    #     down = kornia.geometry.transform.resize(rgb_f, (128, 128), antialias=True)
+    #     up = kornia.geometry.transform.resize(down, (256, 256), antialias=True)
+    #     rgb = up.permute(0, 2, 3, 1).to(rgb.dtype)  # (B, 256, 256, 6)
+    #     print("\033[96mResized obs rgb\033[0m")
+
     third_person = rgb[..., :3].float().div_(255.0).permute(0, 3, 1, 2).unsqueeze(1)
     wrist_cam    = rgb[..., 3:].float().div_(255.0).permute(0, 3, 1, 2).unsqueeze(1)
 
