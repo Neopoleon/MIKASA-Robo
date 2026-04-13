@@ -22,7 +22,9 @@ def export_release_files(output_root_dir: str):
     tracked_files = [f for f in result.stdout.strip().split("\n") if f]
 
     # Files to exclude from export (relative paths)
-    exclude_files = set()
+    exclude_files = {
+        "scripts/export_release_files.py",
+    }
 
     # Directories to exclude from export
     exclude_dirs = set()
@@ -36,9 +38,9 @@ def export_release_files(output_root_dir: str):
     line_replacements = {}
 
     if output_root_dir == ".":
-        output_dir = os.path.join(repo_root, "MIKASA-Robo-release")
+        output_dir = os.path.join(repo_root, "mikasa-robo-env-release")
     else:
-        output_dir = os.path.join(output_root_dir, "MIKASA-Robo")
+        output_dir = os.path.join(output_root_dir, "mikasa-robo-env-release")
 
     # Clean and recreate output directory
     if os.path.exists(output_dir):

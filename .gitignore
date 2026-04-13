@@ -80,3 +80,5 @@ replay_data/*
 !eval/mikasa_eval.py
 !eval/mikasa_env_server.py
 !eval/remote_policy_client.py
+
+mikasa-robo-env-release/
